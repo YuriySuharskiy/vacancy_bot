@@ -76,4 +76,4 @@ Thumbs.db
 *.bak
 *.swp
 *.tmp
-*.orig
+*.orig.env
