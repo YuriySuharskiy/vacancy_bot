@@ -15,17 +15,8 @@ RETRY_BACKOFF = 1.5  # множник між спробами
 
 # Ліміти (налаштуйте при потребі)
 MAX_INPUT_CHARS = 2000         # скоротили, щоб залишалось місця для відповіді
-MAX_OUTPUT_TOKENS = 700        # більше токенів для повної відповіді
+MAX_OUTPUT_TOKENS = 1000        # більше токенів для повної відповіді
 
-def truncate_text(text: str, max_chars: int) -> str:
-    if not text:
-        return text
-    if len(text) <= max_chars:
-        return text
-    # зберігаємо початок і кінець (біля 60/40)
-    head = text[: int(max_chars * 0.6)]
-    tail = text[- int(max_chars * 0.4) :]
-    return head.rstrip() + "\n...\n" + tail.lstrip()
 
 def _call_openai(prompt: str, timeout: int = 15, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> str:
     """Виклик OpenAI з ретраєм і обмеженням вихідних токенів."""
@@ -60,21 +51,19 @@ def _call_openai(prompt: str, timeout: int = 15, max_output_tokens: int = MAX_OU
 def summarize_description(text: str) -> str:
     if not text:
         return ""
-    truncated = truncate_text(text, MAX_INPUT_CHARS)
-    # Додаємо явну інструкцію: завершити повним реченням і не обривати слова
     prompt = f"""
 Стисни опис вакансії до короткого повідомлення для Telegram-каналу.
 Формат:
 — короткий вступ з назвою посади;
 — ключові вимоги;
 — що пропонують;
-— якщо є — зарплата;
-— не більше ~500 символів.
+— не більше 700 символів та не менше 400 символів;
+- не прописуй зарплату в описі.
 
 ВАЖЛИВО: заверши відповідь повним реченням, не обривай слово на середині.
 
 Текст опису:
-{truncated}
+{text}
 """
     # трохи більший timeout на запит
     return _call_openai(prompt, max_output_tokens=MAX_OUTPUT_TOKENS, timeout=30)

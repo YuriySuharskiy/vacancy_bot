@@ -18,9 +18,8 @@ if not BOT_TOKEN or not CHAT_ID:
 TELEGRAM_SEND_URL = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
 
 KYIV = ZoneInfo('Europe/Kyiv')
-# production windows (08:00-10:59 and 18:00-20:59)
-POST_WINDOW_1 = (8, 11)   # 8:00 <= hour < 11:00
-POST_WINDOW_2 = (18, 21)  # 18:00 <= hour < 21:00
+# Нове вікно постингу: щогодини з 10:00 до 20:00 (10:00 <= hour < 20:00)
+POST_WINDOW = (10, 20)
 CHECK_INTERVAL = 60  # seconds
 
 # If you want to test immediately, set TG_TEST_MODE=1 in env — then in_allowed_window() returns True
@@ -30,7 +29,7 @@ def in_allowed_window(dt_kyiv: datetime) -> bool:
     if TEST_MODE:
         return True
     h = dt_kyiv.hour
-    return (POST_WINDOW_1[0] <= h < POST_WINDOW_1[1]) or (POST_WINDOW_2[0] <= h < POST_WINDOW_2[1])
+    return POST_WINDOW[0] <= h < POST_WINDOW[1]
 
 def send_to_telegram(text: str) -> bool:
     payload = {
@@ -65,34 +64,25 @@ def main_loop():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # --- постинг однієї вакансії згідно правил (тест дозволяє ігнорувати час) ---
+            # --- нова логіка: щогодини постимо по одній вакансії у вікні 10:00-20:00 (Kyiv) ---
+            now_kyiv = datetime.now(KYIV)
+            if not in_allowed_window(now_kyiv):
+                time.sleep(CHECK_INTERVAL)
+                continue
+
             last_post_iso = get_meta('last_post_time')
             last_post_dt = parse_iso_to_dt(last_post_iso) if last_post_iso else None
             now_utc = datetime.utcnow()
 
+            # Постимо одну вакансію щонайменше раз на годину, якщо є непостнуті вакансії
             candidate = None
-            if last_post_dt is None:
-                if unposted:
+            if unposted:
+                if last_post_dt is None:
                     candidate = unposted[0]
-            else:
-                newer = []
-                for job in unposted:
-                    job_dt = parse_iso_to_dt(job.get('inserted_at'))
-                    if job_dt and job_dt > last_post_dt:
-                        newer.append((job_dt, job))
-                if newer:
-                    newer.sort(key=lambda x: x[0])
-                    candidate = newer[0][1]
-                else:
-                    if (now_utc - last_post_dt) >= timedelta(hours=1) and unposted:
-                        candidate = unposted[0]
+                elif (now_utc - last_post_dt) >= timedelta(hours=1):
+                    candidate = unposted[0]
 
             if not candidate:
-                time.sleep(CHECK_INTERVAL)
-                continue
-
-            now_kyiv = datetime.now(KYIV)
-            if not in_allowed_window(now_kyiv):
                 time.sleep(CHECK_INTERVAL)
                 continue
 
