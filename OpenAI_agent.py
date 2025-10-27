@@ -12,27 +12,20 @@ client = OpenAI(api_key=API_KEY)
 MODEL = "gpt-5-mini"
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5  # множник між спробами
+DEFAULT_TIMEOUT = 30
 
-# Ліміти (налаштуйте при потребі)
-MAX_INPUT_CHARS = 2000         # скоротили, щоб залишалось місця для відповіді
-MAX_OUTPUT_TOKENS = 1000        # більше токенів для повної відповіді
-
-
-def _call_openai(prompt: str, timeout: int = 15, max_output_tokens: int = MAX_OUTPUT_TOKENS) -> str:
-    """Виклик OpenAI з ретраєм і обмеженням вихідних токенів."""
+def _call_openai(prompt: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """Виклик OpenAI з ретраєм. Без програмних обмежень на розмір prompt/response."""
     delay = 1.0
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = client.responses.create(
                 model=MODEL,
                 input=prompt,
-                max_output_tokens=max_output_tokens,
                 timeout=timeout
             )
-            # Сумісна витяжка тексту з різних версій відповіді
             if hasattr(resp, "output_text") and resp.output_text:
                 return resp.output_text.strip()
-            # інша структура відповіді
             out = ""
             for item in getattr(resp, "output", []) or []:
                 for c in getattr(item, "content", []) or []:
@@ -41,14 +34,14 @@ def _call_openai(prompt: str, timeout: int = 15, max_output_tokens: int = MAX_OU
                     elif isinstance(c, str):
                         out += c
             return out.strip()
-        except Exception as exc:
-            # ловимо будь-які помилки клієнта/мережі; виконуємо ретрай
+        except Exception:
             if attempt == MAX_RETRIES:
                 raise
             time.sleep(delay)
             delay *= RETRY_BACKOFF
 
 def summarize_description(text: str) -> str:
+    """Генерує стислий опис вакансії — без програмного скорочення вхідного тексту або обмеження вихідних токенів."""
     if not text:
         return ""
     prompt = f"""
@@ -57,22 +50,16 @@ def summarize_description(text: str) -> str:
 — короткий вступ з назвою посади;
 — ключові вимоги;
 — що пропонують;
-— не більше 700 символів та не менше 400 символів;
-- не прописуй зарплату в описі.
+— зарплату в повідомленні не вказуй, бо вона вже є в заголовку вакансії.
+— бажано не більше ~1000 символів, але не обрізай слово на середині.
 
-ВАЖЛИВО: заверши відповідь повним реченням, не обривай слово на середині.
-
+ВАЖЛИВО: заверши відповідь повним реченням.
 Текст опису:
 {text}
 """
-    # трохи більший timeout на запит
-    return _call_openai(prompt, max_output_tokens=MAX_OUTPUT_TOKENS, timeout=30)
+    return _call_openai(prompt, timeout=DEFAULT_TIMEOUT)
 
 def format_for_telegram(title: str, company: str = "", salary: str = "", url: str = "", summary: str = "") -> str:
-    """
-    Версія повідомлення з підтримкою компанії.
-    company опціонально, щоб зберегти сумісність.
-    """
     comp_line = f"🏢 {company}\n" if company else ""
     message = (
         f"🧑‍💻 <b>{title}</b>\n"
@@ -84,9 +71,6 @@ def format_for_telegram(title: str, company: str = "", salary: str = "", url: st
     return message
 
 def create_vacancy_summary(title: str, company: str = "", salary: str = "", url: str = "") -> str:
-    """
-    Генерує summary та повертає оформлене повідомлення. company опціонально.
-    """
     text = get_vacancy_description(url)
     if not text:
         return format_for_telegram(title, company, salary, url, "Опис вакансії недоступний.")

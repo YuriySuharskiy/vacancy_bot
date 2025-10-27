@@ -20,9 +20,11 @@ def get_conn():
     return conn
 
 def init_db():
-    conn = get_conn()
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute('''
+    # створюємо таблицю, якщо нема (підлаштуй поля під вашу схему)
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS jobs (
         id INTEGER PRIMARY KEY,
         title TEXT,
@@ -31,16 +33,18 @@ def init_db():
         salary TEXT,
         summary TEXT DEFAULT '',
         inserted_at TEXT,
-        posted_on_telegram INTEGER DEFAULT 0,
-        UNIQUE(title, company)
+        posted_on_telegram INTEGER DEFAULT 0
     )
-    ''')
-    cur.execute('''
+    """)
+    # створюємо унікальний індекс по link (якщо в БД вже нема дублів)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_link ON jobs(link);")
+    # таблиця meta
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT
     )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
@@ -69,69 +73,64 @@ def delete_old_jobs(days: int = 30):
     conn.close()
 
 def fetch_and_store():
-    """
-    Fetch page, insert new jobs into DB.
-    Returns list of inserted job dicts.
-    """
-    init_db()
-    resp = requests.get(URL, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, 'html.parser')
+    import requests
+    import sqlite3
+    from bs4 import BeautifulSoup
+    from urllib.parse import urljoin
+    from datetime import datetime
 
-    vacancies = soup.find_all('div', class_=lambda c: c and 'job-link' in c)
+    print("[debug] fetch_and_store starting")
+    try:
+        r = requests.get(URL, headers=HEADERS, timeout=12)
+    except Exception as e:
+        print("[debug] request error:", e)
+        return []
 
-    inserted = []
-    conn = get_conn()
+    if r.status_code != 200:
+        print("[debug] bad status:", r.status_code)
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    found = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "/jobs/" in href and href.rstrip("/") != "/jobs":
+            full = urljoin(BASE, href)
+            title = (a.get_text() or "").strip()
+            found.append((full, title))
+
+    print(f"[debug] parsed {len(found)} candidate links (raw)")
+    # унікалізуємо по посиланню
+    uniq = []
+    seen = set()
+    for u, t in found:
+        if u not in seen:
+            seen.add(u)
+            uniq.append((u, t))
+    print(f"[debug] unique links to consider: {len(uniq)}")
+
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-
-    for vacancy in vacancies:
-        h2 = vacancy.find('h2', class_='my-0')
-        a_tag = h2.find('a') if h2 else None
-        title = a_tag.get_text(strip=True) if a_tag else ''
-        link = urljoin(BASE, a_tag['href']) if a_tag and a_tag.has_attr('href') else ''
-
-        company = ''
-        salary = ''
-        spans = vacancy.find_all('span', class_=lambda c: c and 'strong-600' in c)
-        for s in spans:
-            mt_parent = s.find_parent('div', class_=lambda c: c and 'mt-xs' in c)
-            if mt_parent:
-                company = s.get_text(strip=True)
-                continue
-            parent_div = s.find_parent('div')
-            if parent_div and not parent_div.has_attr('class'):
-                salary = s.get_text(strip=True)
-                continue
-            if not salary and not mt_parent:
-                salary = s.get_text(strip=True)
-            if not company and mt_parent:
-                company = s.get_text(strip=True)
-
-        if not title:
-            continue
-
-        # check exists
-        cur.execute('SELECT id FROM jobs WHERE title = ? AND company = ?', (title, company))
-        if cur.fetchone():
-            continue
-
-        inserted_at = datetime.utcnow().isoformat()
-        cur.execute(
-            'INSERT INTO jobs (title, company, link, salary, inserted_at, posted_on_telegram) VALUES (?, ?, ?, ?, ?, 0)',
-            (title, company, link, salary, inserted_at)
-        )
-        job_id = cur.lastrowid
-        inserted.append({
-            'id': job_id,
-            'title': title,
-            'company': company,
-            'link': link,
-            'salary': salary,
-            'inserted_at': inserted_at
-        })
-
-    conn.commit()
+    inserted = []
+    for link, title in uniq:
+        now = datetime.utcnow().isoformat()
+        try:
+            # підлаштуй поля під вашу схему (company, salary тощо)
+            cur.execute(
+                "INSERT OR IGNORE INTO jobs (title, company, link, salary, summary, inserted_at, posted_on_telegram) VALUES (?, ?, ?, ?, ?, ?, 0)",
+                (title, "", link, "", "", now)
+            )
+            conn.commit()
+            # дізнаємось чи вставилось
+            cur2 = conn.execute("SELECT id FROM jobs WHERE link = ?", (link,))
+            row = cur2.fetchone()
+            if row:
+                inserted.append(link)
+                print("[debug] ensured in DB:", link)
+        except Exception as e:
+            print("[debug] SQL error for", link, ":", e)
     conn.close()
+    print(f"[debug] fetch_and_store done, inserted/ensured: {len(inserted)}")
     return inserted
 
 def get_unposted_jobs():
