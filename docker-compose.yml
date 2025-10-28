@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: it_jobs_bot
+    restart: always
+    env_file: .env
+    working_dir: /app
+    command: python main.py
+    volumes:
+      - ./:/app
